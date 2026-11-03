@@ -168,7 +168,6 @@ fn tunnel_enabled(app: &Arc<App>, name: &str) -> bool {
 struct ChildGuard {
     child: Option<Child>,
     name: String,
-    state_dir: std::path::PathBuf,
     app: Arc<App>,
 }
 
@@ -196,7 +195,6 @@ async fn drive_child(
     let mut guard = ChildGuard {
         child: Some(child),
         name: name.clone(),
-        state_dir: app.state_dir.clone(),
         app: app.clone(),
     };
     // drain stderr into the log tail
