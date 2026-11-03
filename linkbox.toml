@@ -1,0 +1,44 @@
+# linkbox — client-side reverse tunnel supervisor
+#
+# 每条隧道 = 一次本机主动拨出的 ssh 反向转发。无公网 IP 也能把本地端口
+# "寄存"到远端主机的 loopback 上，绕开慢路径（如 tailscale/DERP 中继）。
+#
+# 文件是唯一配置源。面板的改动会原子写回本文件，注释保留。
+
+[panel]
+bind = "127.0.0.1:8085"
+# token = "change-me"      # 若设置，面板需带 Authorization: Bearer <token>
+
+[defaults]
+ssh_user = "root"
+ssh_port = 22
+connect_timeout_secs = 10
+server_alive_interval = 20
+server_alive_count_max = 3
+health_interval_secs = 15
+backoff_min_secs = 1
+backoff_max_secs = 60
+strict_host_key_checking = "accept-new"
+
+# 端到端探测：这条命令在【远端主机】上执行，打的是转发过去的端口。
+# 支持占位符 {remote_port} {local_target} {health_path}
+health_cmd = "curl -sS -o /dev/null -w \"%{http_code} %{time_total}\" --max-time 8 http://127.0.0.1:{remote_port}{health_path}"
+health_expect = "200"
+health_path = "/"
+
+# ---------------------------------------------------------------
+# 示例：把本机 7864 的模型 API 寄存到海外机的 127.0.0.1:7864。
+# 海外机上把请求地址从 100.126.95.105:7864 改成 127.0.0.1:7864。
+# ---------------------------------------------------------------
+[[tunnels]]
+name = "workbuddy-api"
+host = "152.53.165.119"
+ssh_port = 9551
+ssh_user = "root"
+# identity = "/root/.ssh/cnb_key"      # 私钥路径；留空则用 ssh 默认
+via_socks = "127.0.0.1:31002"           # sing-box socks inbound；删掉此行=直连
+remote_bind = "127.0.0.1"
+remote_port = 7864
+local_target = "127.0.0.1:7864"
+enabled = true
+health_path = "/dashboard"

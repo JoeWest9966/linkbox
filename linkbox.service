@@ -1,0 +1,23 @@
+[Unit]
+Description=linkbox — client-side reverse tunnel supervisor + panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/linkbox run --config /etc/linkbox/linkbox.toml
+Restart=always
+RestartSec=3
+# 子进程 ssh 由 linkbox 管理，不要让 systemd 单独捞
+KillMode=mixed
+TimeoutStopSec=5
+Environment=LINKBOX_STATE_DIR=/run/linkbox
+
+# 只允许本机访问面板；对外暴露请走 panel-gate 等已有网关
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
