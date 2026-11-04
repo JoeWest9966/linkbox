@@ -319,3 +319,94 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
     std::fs::rename(&tmp, path).with_context(|| format!("rename to {}", path.display()))?;
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Structured tunnel edits
+//
+// The panel writes the config through `toml_edit`, not by re-serialising the
+// whole document. Everything the user typed by hand — comments, ordering,
+// blank lines, their own defaults block — survives an add/edit/delete. A
+// tunnel only ever touches its own `[[tunnels]]` table.
+// ---------------------------------------------------------------------------
+
+/// Render one tunnel as a TOML table. Optional fields set to `None` are
+/// omitted entirely, so defaults from `[defaults]` keep applying.
+fn tunnel_table(t: &Tunnel) -> toml_edit::Table {
+    use toml_edit::{Table, value};
+
+    fn opt(tb: &mut Table, key: &str, v: Option<&str>) {
+        match v.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(s) => {
+                tb.insert(key, value(s));
+            }
+            None => {
+                tb.remove(key);
+            }
+        }
+    }
+
+    let mut tb = Table::new();
+    tb.insert("name", value(t.name.as_str()));
+    tb.insert("host", value(t.host.trim()));
+    if let Some(p) = t.ssh_port {
+        tb.insert("ssh_port", value(p as i64));
+    }
+    opt(&mut tb, "ssh_user", t.ssh_user.as_deref());
+    opt(&mut tb, "identity", t.identity.as_deref());
+    opt(&mut tb, "via_socks", t.via_socks.as_deref());
+    opt(&mut tb, "remote_bind", t.remote_bind.as_deref());
+    tb.insert("remote_port", value(t.remote_port as i64));
+    opt(&mut tb, "local_target", t.local_target.as_deref());
+    tb.insert("enabled", value(t.enabled));
+    opt(&mut tb, "health_cmd", t.health_cmd.as_deref());
+    opt(&mut tb, "health_path", t.health_path.as_deref());
+    opt(&mut tb, "health_expect", t.health_expect.as_deref());
+    tb
+}
+
+/// Insert a new `[[tunnels]]` block, or rewrite the existing one with the same
+/// name in place. Surrounding comments and every other table are untouched.
+pub fn upsert_tunnel_in_text(text: &str, t: &Tunnel) -> Result<String> {
+    use toml_edit::{ArrayOfTables, DocumentMut, Item};
+
+    let mut doc: DocumentMut = text.parse().context("parse config")?;
+    if !doc.contains_key("tunnels") {
+        doc.insert("tunnels", Item::ArrayOfTables(ArrayOfTables::new()));
+    }
+    let Some(aot) = doc["tunnels"].as_array_of_tables_mut() else {
+        bail!("配置里的 `tunnels` 不是 [[tunnels]] 段，无法安全编辑");
+    };
+
+    let mut fresh = Some(tunnel_table(t));
+    for block in aot.iter_mut() {
+        if block.get("name").and_then(|v| v.as_str()) == Some(t.name.as_str()) {
+            if let Some(mut nt) = fresh.take() {
+                // keep the block's leading decoration (blank line + comment above it)
+                *nt.decor_mut() = block.decor().clone();
+                *block = nt;
+            }
+            break;
+        }
+    }
+    if let Some(nt) = fresh {
+        aot.push(nt);
+    }
+    Ok(doc.to_string())
+}
+
+/// Drop the `[[tunnels]]` block named `name`. Returns `None` when nothing
+/// matched, so the caller can answer 404 instead of silently "succeeding".
+pub fn remove_tunnel_in_text(text: &str, name: &str) -> Result<Option<String>> {
+    use toml_edit::DocumentMut;
+
+    let mut doc: DocumentMut = text.parse().context("parse config")?;
+    let Some(aot) = doc.get_mut("tunnels").and_then(|i| i.as_array_of_tables_mut()) else {
+        return Ok(None);
+    };
+    let before = aot.len();
+    aot.retain(|b| b.get("name").and_then(|v| v.as_str()) != Some(name));
+    if aot.len() == before {
+        return Ok(None);
+    }
+    Ok(Some(doc.to_string()))
+}

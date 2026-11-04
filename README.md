@@ -29,8 +29,12 @@
 - 单二进制，内置 SOCKS5 stdio bridge（ssh 的 ProxyCommand），不依赖 nc/connect/proxychains
 - ControlMaster 复用主连接：健康探测一次几毫秒，不再新建握手
 - 指数退避 + 抖动重连；配置热重载；`enabled` 开关写回 TOML 且保留注释
+- **面板里直接增删改隧道**，不必手写 TOML；改动落盘时用 `toml_edit` 只重写
+  那一个 `[[tunnels]]` 段，你手写的注释、空行、自定的 `[defaults]` 全部原样保留
 - 原子写配置；pid 注册表防双 forwarder；子进程退出保证 reap + 清 socket
-- 面板：状态 / RTT / 进程日志尾 / 重启 / 启停 / TOML 编辑器（3s 轮询，零外部依赖）
+- 面板：状态 / RTT / 进程日志尾 / 重启 / 启停 / 增删改 / TOML 编辑器（3s 轮询，零外部依赖）
+- 相位语义诚实：**进程起来 ≠ 隧道通了**。spawn 只是 `dialing`，只有端到端探测
+  通过才变 `up`，探测转为失败变 `degraded`，进程死了才 `down`
 
 ## 快速开始
 
@@ -45,6 +49,25 @@ sudo systemctl enable --now linkbox
 ```
 
 面板：`http://127.0.0.1:8085`（只听回环；对外暴露请挂你已有的网关 + 鉴权）
+
+### 面板 API
+
+| 方法 | 路径 | 作用 |
+|---|---|---|
+| GET | `/api/state` | 每条隧道的相位、RTT、pid、日志尾 |
+| GET | `/api/tunnels` | 配置里的隧道原文 + `[defaults]`（用于表单预填） |
+| POST | `/api/tunnels` | 新建或按 `name` 覆盖更新一条隧道 |
+| DELETE | `/api/tunnels/{name}` | 删除隧道并断开转发 |
+| POST | `/api/tunnels/{name}/restart` \| `/enable` \| `/disable` | 单条操作 |
+| GET \| POST | `/api/config` | 读/整份写 TOML（写前校验，非法则拒绝并保留旧配置） |
+
+```bash
+curl -X POST http://127.0.0.1:8085/api/tunnels -H 'content-type: application/json' -d '{
+  "name":"jellyfin","host":"152.53.165.119","ssh_port":9551,
+  "identity":"/root/.ssh/cnb_key","via_socks":"127.0.0.1:31002",
+  "remote_port":8096,"local_target":"127.0.0.1:8096","enabled":true
+}'
+```
 
 ## 配置
 

@@ -112,18 +112,37 @@ pub fn spawn_health_loop(app: Arc<App>, name: String) {
                 .health_interval_secs
                 .max(5);
             if t.health_cmd.trim().is_empty() {
+                // No probe configured: fall back to plain liveness. Give ssh a
+                // grace window to finish the handshake, then promote
+                // dialing -> up; the tunnel task drops it back to `down` if the
+                // process dies.
+                tokio::time::sleep(Duration::from_secs(5)).await;
+                app.set(&name, |s| {
+                    if s.phase == Phase::Dialing && s.pid.is_some() {
+                        s.phase = Phase::Up;
+                        s.up_since = Some(crate::state::now_epoch());
+                    }
+                });
                 tokio::time::sleep(Duration::from_secs(interval)).await;
                 continue;
             }
             let h = run_probe(&app, &t).await;
             app.set(&name, |s| {
+                if s.phase == Phase::Disabled {
+                    return;
+                }
                 s.health = Some(h.clone());
-                // health can drag a "ssh alive" tunnel back to degraded
-                s.phase = match (s.phase, h.ok) {
-                    (Phase::Up, false) => Phase::Degraded,
-                    (Phase::Degraded, true) => Phase::Up,
-                    (p, _) => p,
-                };
+                if h.ok {
+                    if s.phase != Phase::Up {
+                        s.up_since = Some(crate::state::now_epoch());
+                    }
+                    s.phase = Phase::Up;
+                } else if s.phase == Phase::Up {
+                    // it was working and now it is not: that is `degraded`.
+                    // A tunnel still in `dialing` is just not there yet.
+                    s.phase = Phase::Degraded;
+                    s.up_since = None;
+                }
             });
             tokio::time::sleep(Duration::from_secs(interval)).await;
         }

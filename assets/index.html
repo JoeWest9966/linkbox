@@ -57,6 +57,17 @@
   .tok{display:flex;gap:8px;align-items:center}
   input{background:#0b0f14;color:var(--fg);border:1px solid var(--line);
     border-radius:6px;padding:5px 9px;font:inherit;font-size:12px;width:210px}
+  dialog{background:var(--panel);color:var(--fg);border:1px solid var(--line);
+    border-radius:12px;padding:22px;width:min(680px,92vw)}
+  dialog::backdrop{background:rgba(0,0,0,.62)}
+  dialog h3{margin:0 0 16px;font-size:14px;letter-spacing:.4px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px}
+  .grid label{display:flex;flex-direction:column;gap:5px;font-size:11px;
+    color:var(--dim);text-transform:uppercase;letter-spacing:.6px}
+  .grid input{width:100%}
+  .chk{display:flex;align-items:center;gap:7px;margin-top:14px;font-size:12px;color:var(--dim)}
+  .chk input{width:auto}
+  .danger:hover{background:rgba(248,81,73,.16);border-color:rgba(248,81,73,.5);color:var(--down)}
 </style>
 </head>
 <body>
@@ -71,6 +82,10 @@
 </header>
 
 <main>
+  <div class="bar" style="margin:0 0 12px">
+    <button class="primary" id="newTunnel">＋ new tunnel</button>
+    <span class="meta" id="tblMeta"></span>
+  </div>
   <table>
     <thead>
       <tr>
@@ -94,6 +109,32 @@
 </main>
 
 <div class="toast" id="toast"></div>
+
+<dialog id="dlg">
+  <form id="tform">
+    <h3 id="dlgTitle">new tunnel</h3>
+    <div class="grid">
+      <label>name<input id="f_name" placeholder="workbuddy-api" required>
+        <span style="text-transform:none;letter-spacing:0">小写字母/数字/-/_，1–32 位</span></label>
+      <label>remote host<input id="f_host" placeholder="152.53.165.119" required></label>
+      <label>ssh port<input id="f_ssh_port" type="number" placeholder="22"></label>
+      <label>ssh user<input id="f_ssh_user" placeholder="root"></label>
+      <label>identity file<input id="f_identity" placeholder="/root/.ssh/cnb_key"></label>
+      <label>via socks<input id="f_via_socks" placeholder="127.0.0.1:31002"></label>
+      <label>remote bind<input id="f_remote_bind" placeholder="127.0.0.1"></label>
+      <label>remote port<input id="f_remote_port" type="number" placeholder="7864" required></label>
+      <label>local target<input id="f_local_target" placeholder="127.0.0.1:7864"></label>
+      <label>health path<input id="f_health_path" placeholder="/dashboard"></label>
+    </div>
+    <label class="chk"><input id="f_enabled" type="checkbox" checked> enabled</label>
+    <div class="small err" id="formErr" style="margin-top:10px;min-height:16px"></div>
+    <div class="bar">
+      <button class="primary" type="submit" id="dlgSave">save</button>
+      <button type="button" id="dlgCancel">cancel</button>
+      <span class="meta">留空的项走 [defaults]</span>
+    </div>
+  </form>
+</dialog>
 
 <script>
 const $ = (s) => document.querySelector(s);
@@ -163,12 +204,16 @@ function render(st) {
             onclick="toggle('${esc(t.name)}', ${t.phase === 'disabled'})">
             ${t.phase === 'disabled' ? 'enable' : 'disable'}
           </button>
+          <button onclick="editTunnel('${esc(t.name)}')">edit</button>
+          <button class="danger" onclick="delTunnel('${esc(t.name)}')">delete</button>
         </div>
         ${log}
       </td>
     </tr>`;
   }).join('');
-  $('#rows').innerHTML = rows || `<tr><td colspan="7" class="dim">no tunnels configured</td></tr>`;
+  $('#rows').innerHTML = rows || `<tr><td colspan="7" class="dim">还没有隧道 —— 点左上角 ＋ new tunnel 建一条</td></tr>`;
+  $('#tblMeta').textContent = st.tunnels.length
+    ? `${st.tunnels.filter(t => t.phase === 'up').length}/${st.tunnels.length} up` : '';
 }
 
 async function api(path, opts = {}) {
@@ -202,8 +247,7 @@ async function toggle(name, enable) {
   refresh();
 }
 
-$('#saveCfg').onclick = async () => {
-  try {
+$('#saveCfg').onclick = async () => {  try {
     const r = await api('/api/config', {
       method: 'POST',
       body: JSON.stringify({text: $('#cfg').value})
@@ -224,6 +268,113 @@ $('#saveToken').onclick = () => {
   localStorage.setItem('linkbox_token', token);
   toast('token stored');
   refresh();
+};
+
+// ---------------------------------------------------------------- tunnel form
+
+const FIELDS = ['name', 'host', 'ssh_port', 'ssh_user', 'identity', 'via_socks',
+                'remote_bind', 'remote_port', 'local_target', 'health_path'];
+let editingName = null;
+
+function openForm(t, defaults) {
+  editingName = t ? t.name : null;
+  $('#dlgTitle').textContent = t ? `edit — ${t.name}` : 'new tunnel';
+  $('#formErr').textContent = '';
+  const df = defaults || {};
+  const val = (k, fallback) => {
+    const v = t && t[k] != null ? t[k] : (df[k] != null ? df[k] : fallback);
+    return v == null ? '' : v;
+  };
+  $('#f_name').value = t ? t.name : '';
+  $('#f_name').readOnly = !!t;
+  $('#f_host').value = val('host', '');
+  $('#f_ssh_port').value = val('ssh_port', df.ssh_port || '');
+  $('#f_ssh_user').value = val('ssh_user', df.ssh_user || '');
+  $('#f_identity').value = val('identity', '');
+  $('#f_via_socks').value = val('via_socks', '');
+  $('#f_remote_bind').value = val('remote_bind', '127.0.0.1');
+  $('#f_remote_port').value = t ? t.remote_port : '';
+  $('#f_local_target').value = val('local_target', '');
+  $('#f_health_path').value = val('health_path', df.health_path || '');
+  $('#f_enabled').checked = t ? t.enabled !== false : true;
+  $('#dlg').showModal();
+}
+
+async function editTunnel(name) {
+  try {
+    const d = await api('/api/tunnels');
+    const t = (d.tunnels || []).find(x => x.name === name);
+    if (!t) { toast('隧道不在配置里了', true); return; }
+    openForm(t, d.defaults);
+  } catch (e) { toast('读取失败: ' + e.message, true); }
+}
+
+async function delTunnel(name) {
+  if (!confirm(`删除隧道 ${name}？\n\n会从配置文件里删掉这一段，正在跑的转发会立即断开。`)) return;
+  try {
+    await api('/api/tunnels/' + encodeURIComponent(name), {method: 'DELETE'});
+    toast(`已删除 ${name}`);
+    refresh(); loadConfig();
+  } catch (e) { toast('删除失败: ' + e.message, true); }
+}
+
+$('#newTunnel').onclick = async () => {
+  let d = {defaults: {}};
+  try { d = await api('/api/tunnels'); } catch (e) {}
+  openForm(null, d.defaults);
+};
+$('#dlgCancel').onclick = () => $('#dlg').close();
+
+$('#tform').onsubmit = async (e) => {
+  e.preventDefault();
+  const str = (id) => { const v = $(id).value.trim(); return v === '' ? null : v; };
+  const num = (id) => { const v = $(id).value.trim(); return v === '' ? null : Number(v); };
+
+  const name = $('#f_name').value.trim();
+  if (!/^[a-z0-9_-]{1,32}$/.test(name)) {
+    $('#formErr').textContent = 'name 只允许小写字母/数字/-/_，1–32 位';
+    return;
+  }
+  if (!str('#f_host')) { $('#formErr').textContent = 'remote host 必填'; return; }
+  const rp = num('#f_remote_port');
+  if (!rp || rp < 1 || rp > 65535) { $('#formErr').textContent = 'remote port 必须是 1–65535'; return; }
+
+  const body = {
+    name,
+    host: str('#f_host'),
+    ssh_port: num('#f_ssh_port'),
+    ssh_user: str('#f_ssh_user'),
+    identity: str('#f_identity'),
+    via_socks: str('#f_via_socks'),
+    remote_bind: str('#f_remote_bind'),
+    remote_port: rp,
+    local_target: str('#f_local_target'),
+    enabled: $('#f_enabled').checked,
+    health_path: str('#f_health_path'),
+    health_cmd: null,
+    health_expect: null
+  };
+
+  const btn = $('#dlgSave');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/api/tunnels', {
+      method: 'POST', headers: headers(true), body: JSON.stringify(body)
+    });
+    const txt = await r.text();
+    if (!r.ok) {
+      $('#formErr').textContent = txt.slice(0, 300);
+      toast('保存被拒绝', true);
+      return;
+    }
+    $('#dlg').close();
+    toast(editingName ? `已更新 ${name}` : `已创建 ${name}，正在拨号…`);
+    refresh(); loadConfig();
+  } catch (err) {
+    $('#formErr').textContent = String(err);
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 loadConfig();

@@ -123,10 +123,12 @@ fn spawn_tunnel(app: Arc<App>, name: String) {
                     tracing::info!(name = %name, pid = ?pid, spec = %plan.remote_spec, "forwarder started");
                     app.set(&name, |s| {
                         s.pid = pid;
-                        s.up_since = Some(now_epoch());
+                        s.up_since = None;
                         s.last_error = None;
-                        // ssh is up: the health loop only downgrades from here
-                        s.phase = Phase::Up;
+                        // A spawned process is NOT a working tunnel: ssh can be
+                        // mid-handshake, or about to die on authentication. Only
+                        // the end-to-end probe is allowed to declare `up`.
+                        s.phase = Phase::Dialing;
                     });
                     let (exit, err) = drive_child(app.clone(), name.clone(), child).await;
                     app.set(&name, |s| {
