@@ -30,6 +30,12 @@
   .down{background:rgba(248,81,73,.16);color:var(--down)}
   .dialing{background:rgba(88,166,255,.16);color:var(--accent)}
   .disabled{background:rgba(110,118,129,.16);color:var(--off)}
+  /* the remote port is held by something that is not us: retrying is useless */
+  .conflict{background:rgba(210,153,34,.22);color:var(--warn);
+    box-shadow:inset 0 0 0 1px rgba(210,153,34,.45)}
+  /* needs a human: a key is missing or wrong */
+  .authfailed{background:rgba(248,81,73,.22);color:var(--down);
+    box-shadow:inset 0 0 0 1px rgba(248,81,73,.5)}
   .rtt{font-variant-numeric:tabular-nums}
   .dim{color:var(--dim)}
   .small{font-size:11px}

@@ -99,15 +99,46 @@ health_path = "/dashboard"
 占位符：`{remote_port}` `{local_target}` `{health_path}`。
 把 `health_cmd` 设为空串可禁用端到端探测（只剩进程存活判断）。
 
+## 远端端口租约（为什么不会自锁）
+
+反向转发的端口在**别人的机器上**，而且比你的进程活得久。客户端一死，远端 sshd 会继续
+占着 `127.0.0.1:<port>` 直到 `ClientAliveInterval` 到期 —— Debian 默认 600×3，最坏半小时。
+这期间每次重拨都是 `remote port forwarding failed`，看起来像网络问题，其实是自己上一代
+连接留下的僵尸。所以端口不是"抢"，是"租"：
+
+- 连上后远端跑一个极小的 shell，记下 `端口 + 真正持有该端口的 pid + 时间戳`，文件名是
+  `实例指纹-隧道名`（指纹来自 `/etc/machine-id` + 配置路径，重启不变，别的机器不会撞车）；
+- 撞上端口占用时先**回读租约**：pid 与租约一致、且该进程确实是 `sshd`，才 kill —— 那是我
+  们自己的僵尸；
+- 任何不匹配都不杀，标 `conflict` 停下等人。杀一个认不出的进程，就是去搞坏别人的生产。
+
+配套三件事：
+
+1. 关转发先 `SIGTERM` 再 `SIGKILL`。`SIGKILL` 不发 FIN，远端继续占端口；`SIGTERM` 让 ssh
+   正常收尾，端口立刻释放 —— 改配置、点 restart 都不会再自锁。
+2. 失败按语义分流：`port forwarding failed` → 回收后立即重拨；`Permission denied` → 停住标
+   `authfailed` 等人装密钥；超时/拒绝 → 指数退避。
+3. 退避期间配置一变（或点了 restart）0.5 秒内醒来，不用等满 60 秒。
+
+服务器端再加一行兜底，覆盖断电、`kill -9` 这类来不及收尾的情况：
+
+```bash
+# /etc/ssh/sshd_config
+ClientAliveInterval 15
+ClientAliveCountMax 3
+```
+
 ## 状态机
 
-| phase | 含义 |
-|---|---|
-| `disabled` | 配置里 `enabled = false` |
-| `dialing` | ssh 正在拨出 |
-| `up` | ssh 活着且端到端探测通过 |
-| `degraded` | ssh 活着但远端探测失败（端口被抢/服务挂了） |
-| `down` | ssh 不在，退避重连中 |
+| phase | 含义 | 自愈 |
+|---|---|---|
+| `disabled` | 配置里 `enabled = false` | — |
+| `dialing` | ssh 正在拨出，还没证明能用 | 是 |
+| `up` | ssh 活着且端到端探测通过 | — |
+| `degraded` | ssh 活着但远端探测失败（后端挂了） | 是 |
+| `down` | ssh 不在，退避重连中 | 是 |
+| `conflict` | 远端端口被占，且不是我们的租约 | 每 30 秒复查，绝不杀认不出的进程 |
+| `authfailed` | 认证失败，重试无意义 | 否，等改配置或手动 restart |
 
 ## 设计笔记（踩过的坑）
 
@@ -116,6 +147,10 @@ health_path = "/dashboard"
 - ssh 的 ProxyCommand 下 stdin 是关闭的（`-N`）：bridge 收到 stdin EOF 只能半关，
   绝不能 shutdown 整条 socket，否则隧道秒断（这就是那个"exit status: 0"幽灵）
 - 子进程用 Drop guard 保证 kill+reap，防止 future 取消时孤儿逃逸
+- 关子进程必须先 SIGTERM：SIGKILL 不发 FIN，远端 sshd 会继续占着转发端口最长半小时，
+  于是"改个配置"演变成 113 次无意义重试
+- `ServerAliveInterval` 只是单向心跳（我发现服务器死了）；服务器发现我死了只认 FIN 或
+  `ClientAliveInterval`，两件事别混为一谈
 
 ## License
 

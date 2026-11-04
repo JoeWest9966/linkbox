@@ -15,10 +15,14 @@ pub enum Phase {
     Up,
     Degraded,
     Down,
+    /// ssh is fine, but the remote port is held by something that is not us.
+    /// Retrying is pointless until that changes, so we stop and say so.
+    Conflict,
+    /// Authentication failed: a human has to install a key. Retry loop parks.
+    AuthFailed,
 }
 
 impl Phase {
-    #[allow(dead_code)]
     pub fn as_str(&self) -> &'static str {
         match self {
             Phase::Disabled => "disabled",
@@ -26,7 +30,16 @@ impl Phase {
             Phase::Up => "up",
             Phase::Degraded => "degraded",
             Phase::Down => "down",
+            Phase::Conflict => "conflict",
+            Phase::AuthFailed => "authfailed",
         }
+    }
+
+    /// Phases where probing the remote makes no sense: there is no forwarder
+    /// to probe through, and reporting "no control socket" would bury the real
+    /// reason the panel already knows.
+    pub fn probe_worthwhile(&self) -> bool {
+        matches!(self, Phase::Dialing | Phase::Up | Phase::Degraded)
     }
 }
 
@@ -146,10 +159,13 @@ pub struct App {
     pub self_exe: PathBuf,
     pub started_at: u64,
     pub stopping: AtomicBool,
+    /// Stable identity of this installation, used to build remote lease names.
+    pub instance: String,
 }
 
 impl App {
     pub fn new(config_path: PathBuf, self_exe: PathBuf, state_dir: PathBuf) -> Self {
+        let instance = crate::lease::instance_id(&config_path);
         Self {
             config_path,
             config_text: RwLock::new(String::new()),
@@ -161,7 +177,14 @@ impl App {
             self_exe,
             started_at: now_epoch(),
             stopping: AtomicBool::new(false),
+            instance,
         }
+    }
+
+    /// Remote lease name for a tunnel: distinguishes this installation from any
+    /// other linkbox that happens to use the same ssh key and port.
+    pub fn lease_fp(&self, name: &str) -> String {
+        crate::lease::fingerprint(&self.instance, name)
     }
 
     pub fn control_for(&self, name: &str) -> Arc<Control> {

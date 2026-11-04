@@ -1,5 +1,6 @@
 mod config;
 mod health;
+mod lease;
 mod panel;
 mod proxy;
 mod ssh;
@@ -80,7 +81,17 @@ async fn async_main(config_path: PathBuf, cmd: Cmd) -> Result<()> {
             let defaults = &cfg.defaults;
             for t in &cfg.tunnels {
                 let r = cfg.resolve(t);
-                let plan = ssh::forwarder_plan(&r, defaults, &PathBuf::from("/tmp"), &PathBuf::from("linkbox"));
+                let lease_cmd = lease::lease_command(
+                    &lease::fingerprint(&lease::instance_id(&config_path), &t.name),
+                    r.remote_port,
+                );
+                let plan = ssh::forwarder_plan(
+                    &r,
+                    defaults,
+                    &PathBuf::from("/tmp"),
+                    &PathBuf::from("linkbox"),
+                    lease_cmd,
+                );
                 println!(
                     "\n[{}] {} -> {} (enabled={})\n  ssh {}",
                     t.name,

@@ -104,6 +104,17 @@ pub fn spawn_health_loop(app: Arc<App>, name: String) {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 continue;
             };
+            // Probing only makes sense while a forwarder could be up. In
+            // `conflict`/`authfailed`/`down` the panel already knows the reason
+            // and "no control socket" would just bury it.
+            if !app
+                .get(&name)
+                .map(|s| s.phase.probe_worthwhile())
+                .unwrap_or(false)
+            {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                continue;
+            }
             let interval = app
                 .cfg
                 .read()
