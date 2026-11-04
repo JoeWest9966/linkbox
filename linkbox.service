@@ -18,6 +18,8 @@ NoNewPrivileges=true
 ProtectSystem=full
 ProtectHome=read-only
 PrivateTmp=true
+# 面板要就地改配置：只放行配置目录，其余 /etc 仍然只读
+ReadWritePaths=/etc/linkbox
 
 [Install]
 WantedBy=multi-user.target

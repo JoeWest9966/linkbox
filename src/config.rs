@@ -324,48 +324,144 @@ pub fn write_atomic(path: &Path, contents: &str) -> Result<()> {
 // Structured tunnel edits
 //
 // The panel writes the config through `toml_edit`, not by re-serialising the
-// whole document. Everything the user typed by hand — comments, ordering,
-// blank lines, their own defaults block — survives an add/edit/delete. A
-// tunnel only ever touches its own `[[tunnels]]` table.
+// whole document. A tunnel edit merges key by key into its own `[[tunnels]]`
+// table, so hand-written comments survive at both levels: above the block, and
+// *inside* it (`# identity = ...` living in the next key's prefix decor).
 // ---------------------------------------------------------------------------
 
-/// Render one tunnel as a TOML table. Optional fields set to `None` are
-/// omitted entirely, so defaults from `[defaults]` keep applying.
-fn tunnel_table(t: &Tunnel) -> toml_edit::Table {
-    use toml_edit::{Table, value};
+/// Comment lines hanging off a key's prefix decor. When a key is dropped its
+/// comments would go with it, so we collect and re-home them. The prefix lives
+/// on the *key*, not the value: that is where `# identity = ...` sits.
+fn key_comments(tb: &toml_edit::Table, key: &str) -> String {
+    tb.get_key_value(key)
+        .and_then(|(k, _)| k.leaf_decor().prefix().and_then(|d| d.as_str()))
+        .unwrap_or("")
+        .lines()
+        .filter(|l| l.trim_start().starts_with('#'))
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
 
-    fn opt(tb: &mut Table, key: &str, v: Option<&str>) {
+/// Set a key's value while keeping the existing `Key` and the value's decor.
+/// `Table::insert` would swap in a brand-new key and throw away the comments
+/// attached to it, which is exactly what a user's `# identity = ...` line is.
+fn set_item(tb: &mut toml_edit::Table, key: &str, mut item: toml_edit::Item) {
+    match tb.get_key_value_mut(key) {
+        Some((_, slot)) => {
+            if let (Some(old), Some(new)) =
+                (slot.as_value().map(|v| v.decor().clone()), item.as_value_mut())
+            {
+                *new.decor_mut() = old;
+            }
+            *slot = item;
+        }
+        None => {
+            tb.insert(key, item);
+        }
+    }
+}
+
+fn set_str(tb: &mut toml_edit::Table, key: &str, s: &str) {
+    set_item(tb, key, toml_edit::value(s));
+}
+
+fn set_int(tb: &mut toml_edit::Table, key: &str, n: i64) {
+    set_item(tb, key, toml_edit::value(n));
+}
+
+fn set_bool(tb: &mut toml_edit::Table, key: &str, b: bool) {
+    set_item(tb, key, toml_edit::value(b));
+}
+
+/// Set/remove this tunnel's keys on `tb` in place. Existing keys keep their
+/// position and decor, which is what keeps in-block comments alive. Comments
+/// orphaned by a removed key are appended to `orphans`.
+fn apply_tunnel(tb: &mut toml_edit::Table, t: &Tunnel, orphans: &mut String) {
+    fn drop_key(tb: &mut toml_edit::Table, key: &str, orphans: &mut String) {
+        let c = key_comments(tb, key);
+        if tb.remove(key).is_none() {
+            return;
+        }
+        if c.is_empty() {
+            return;
+        }
+        if !orphans.is_empty() {
+            orphans.push('\n');
+        }
+        orphans.push_str(&c);
+    }
+
+    fn opt(
+        tb: &mut toml_edit::Table,
+        key: &str,
+        v: Option<&str>,
+        orphans: &mut String,
+    ) {
         match v.map(str::trim).filter(|s| !s.is_empty()) {
             Some(s) => {
-                tb.insert(key, value(s));
+                set_str(tb, key, s);
             }
-            None => {
-                tb.remove(key);
-            }
+            None => drop_key(tb, key, orphans),
         }
     }
 
-    let mut tb = Table::new();
-    tb.insert("name", value(t.name.as_str()));
-    tb.insert("host", value(t.host.trim()));
-    if let Some(p) = t.ssh_port {
-        tb.insert("ssh_port", value(p as i64));
+    set_str(tb, "name", t.name.as_str());
+    set_str(tb, "host", t.host.trim());
+    match t.ssh_port {
+        Some(p) => {
+            set_int(tb, "ssh_port", p as i64);
+        }
+        None => drop_key(tb, "ssh_port", orphans),
     }
-    opt(&mut tb, "ssh_user", t.ssh_user.as_deref());
-    opt(&mut tb, "identity", t.identity.as_deref());
-    opt(&mut tb, "via_socks", t.via_socks.as_deref());
-    opt(&mut tb, "remote_bind", t.remote_bind.as_deref());
-    tb.insert("remote_port", value(t.remote_port as i64));
-    opt(&mut tb, "local_target", t.local_target.as_deref());
-    tb.insert("enabled", value(t.enabled));
-    opt(&mut tb, "health_cmd", t.health_cmd.as_deref());
-    opt(&mut tb, "health_path", t.health_path.as_deref());
-    opt(&mut tb, "health_expect", t.health_expect.as_deref());
+    opt(tb, "ssh_user", t.ssh_user.as_deref(), orphans);
+    opt(tb, "identity", t.identity.as_deref(), orphans);
+    opt(tb, "via_socks", t.via_socks.as_deref(), orphans);
+    opt(tb, "remote_bind", t.remote_bind.as_deref(), orphans);
+    set_int(tb, "remote_port", t.remote_port as i64);
+    opt(tb, "local_target", t.local_target.as_deref(), orphans);
+    set_bool(tb, "enabled", t.enabled);
+    opt(tb, "health_cmd", t.health_cmd.as_deref(), orphans);
+    opt(tb, "health_path", t.health_path.as_deref(), orphans);
+    opt(tb, "health_expect", t.health_expect.as_deref(), orphans);
+}
+
+/// Re-home comments orphaned by removed keys onto the block's first key so they
+/// stay in the file instead of vanishing.
+fn attach_orphans(tb: &mut toml_edit::Table, orphans: &str) {
+    if orphans.is_empty() {
+        return;
+    }
+    let Some(first) = tb.iter().next().map(|(k, _)| k.to_string()) else {
+        return;
+    };
+    let Some((mut k, _)) = tb.get_key_value_mut(&first) else {
+        return;
+    };
+    let old = k
+        .leaf_decor()
+        .prefix()
+        .and_then(|d| d.as_str())
+        .unwrap_or("")
+        .trim_start_matches('\n')
+        .to_string();
+    k.leaf_decor_mut().set_prefix(if old.trim().is_empty() {
+        format!("\n{orphans}\n")
+    } else {
+        format!("\n{orphans}\n{old}")
+    });
+}
+
+/// Render one tunnel as a fresh TOML table. Optional fields set to `None` are
+/// omitted entirely, so defaults from `[defaults]` keep applying.
+fn tunnel_table(t: &Tunnel) -> toml_edit::Table {
+    let mut tb = toml_edit::Table::new();
+    apply_tunnel(&mut tb, t, &mut String::new());
     tb
 }
 
-/// Insert a new `[[tunnels]]` block, or rewrite the existing one with the same
-/// name in place. Surrounding comments and every other table are untouched.
+/// Insert a new `[[tunnels]]` block, or merge into the existing one with the
+/// same name in place. Comments and every other table are untouched.
 pub fn upsert_tunnel_in_text(text: &str, t: &Tunnel) -> Result<String> {
     use toml_edit::{ArrayOfTables, DocumentMut, Item};
 
@@ -377,19 +473,18 @@ pub fn upsert_tunnel_in_text(text: &str, t: &Tunnel) -> Result<String> {
         bail!("配置里的 `tunnels` 不是 [[tunnels]] 段，无法安全编辑");
     };
 
-    let mut fresh = Some(tunnel_table(t));
+    let mut fresh = Some(t.name.clone());
     for block in aot.iter_mut() {
         if block.get("name").and_then(|v| v.as_str()) == Some(t.name.as_str()) {
-            if let Some(mut nt) = fresh.take() {
-                // keep the block's leading decoration (blank line + comment above it)
-                *nt.decor_mut() = block.decor().clone();
-                *block = nt;
-            }
+            let mut orphans = String::new();
+            apply_tunnel(block, t, &mut orphans);
+            attach_orphans(block, &orphans);
+            fresh = None;
             break;
         }
     }
-    if let Some(nt) = fresh {
-        aot.push(nt);
+    if fresh.is_some() {
+        aot.push(tunnel_table(t));
     }
     Ok(doc.to_string())
 }

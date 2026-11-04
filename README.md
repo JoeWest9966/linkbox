@@ -48,6 +48,11 @@ sudo cp linkbox.service /etc/systemd/system/
 sudo systemctl enable --now linkbox
 ```
 
+`linkbox.service` 里带了 `ProtectSystem=full`（`/etc` 只读），所以必须同时有
+`ReadWritePaths=/etc/linkbox` —— 否则面板能跑隧道、却改不了配置，保存时报
+`write /etc/linkbox/.linkbox.toml.tmp: Read-only file system`。改 unit 后记得
+`systemctl daemon-reload`。
+
 面板：`http://127.0.0.1:8085`（只听回环；对外暴露请挂你已有的网关 + 鉴权）
 
 ### 面板 API
