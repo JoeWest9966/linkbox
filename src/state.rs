@@ -43,9 +43,28 @@ impl Phase {
     }
 }
 
+/// What flavour of "not ok" a probe returned. The distinction is load-bearing:
+/// on a 250 ms RTT cross-border link a timeout is usually queueing, while a
+/// refused connection is a dead service. Treating them the same is how a panel
+/// ends up crying wolf every evening.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeKind {
+    Ok,
+    /// Nothing came back in time — congested link or a blocked channel.
+    Timeout,
+    /// ssh ran, but the remote command failed or answered the wrong thing.
+    Failed,
+    /// No forwarder to probe through at all.
+    NoForwarder,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Health {
     pub ok: bool,
+    pub kind: ProbeKind,
+    /// Consecutive failures including this one; reset to 0 by a success.
+    pub fail_streak: u32,
     pub rtt_ms: Option<u64>,
     pub detail: String,
     pub at: u64,

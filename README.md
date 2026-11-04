@@ -22,7 +22,12 @@
 - **autossh 只会重启进程，不管转发是否真的可用。** ssh 进程活着 ≠ 隧道能用：
   远端端口被抢时 ssh 正常登录但静默不转发（除非 `ExitOnForwardFailure`）。
 - linkbox 的健康检查是**端到端**的：周期性从远端主机对转发端口发真实请求，
-  拿到 HTTP code + RTT 才算健康，否则面板标 `degraded`。
+  拿到 HTTP code + RTT 才算健康。但一次失败不等于坏——见下面的「strike」规则。
+- **strike 规则（防误报）**：探测通道和业务流量共用同一条 ssh TCP 连接，也就共用
+  一个拥塞窗口。跨境 250ms RTT 的链路上，业务上传会把探测的小包堵在 250KB 的
+  发送队列后面。所以：`timeout` 连续 **3** 次才降级，硬失败（拒绝/重置/答案不对）
+  连续 **2** 次才降级；低于阈值面板仍是 `up`，只标 `slow` 并显示 `strike n/N`。
+  一次成功立刻回到 `up`。
 
 ## 特性
 
@@ -134,14 +139,18 @@ ClientAliveCountMax 3
 |---|---|---|
 | `disabled` | 配置里 `enabled = false` | — |
 | `dialing` | ssh 正在拨出，还没证明能用 | 是 |
-| `up` | ssh 活着且端到端探测通过 | — |
-| `degraded` | ssh 活着但远端探测失败（后端挂了） | 是 |
+| `up` | ssh 活着且端到端探测通过（允许少量 strike 未满） | — |
+| `degraded` | ssh 活着，但探测连续失败达到阈值（超时 3 次 / 硬失败 2 次） | 是 |
 | `down` | ssh 不在，退避重连中 | 是 |
 | `conflict` | 远端端口被占，且不是我们的租约 | 每 30 秒复查，绝不杀认不出的进程 |
 | `authfailed` | 认证失败，重试无意义 | 否，等改配置或手动 restart |
 
 ## 设计笔记（踩过的坑）
 
+- **健康探测会输给业务流量**：`ssh -R` 的转发通道、`ControlMaster` 探测通道共用一条
+  TCP 连接和一个拥塞窗口。实测主连接 `cwnd` 被压到 10、`Send-Q` 常年 150–250KB、
+  `rcv_ooopack` 5000+，此时探测几 KB 的请求排在队尾，8 秒拿不到响应——隧道没坏，
+  只是忙。单次超时就翻红是假警报，所以才有 strike 阈值。
 - `ExitOnForwardFailure=yes` 是生死线：否则远端端口被占时 ssh 静默"在线但不转发"
 - `ControlPersist=no`：`yes` 会让 master 自行后台化、前台 ssh exit 0，端口被孤儿占死
 - ssh 的 ProxyCommand 下 stdin 是关闭的（`-N`）：bridge 收到 stdin EOF 只能半关，

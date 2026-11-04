@@ -182,8 +182,15 @@ function render(st) {
   const rows = st.tunnels.map(t => {
     const h = t.health;
     const rtt = h ? (h.rtt_ms != null ? h.rtt_ms + ' ms' : '') : '';
+    // A timeout while the tunnel is still `up` is queueing, not failure: paint
+    // it as a warning instead of crying wolf in red.
+    const hClass = !h ? 'disabled' : h.ok ? 'up'
+      : (t.phase === 'up' || h.kind === 'timeout') ? 'degraded' : 'down';
+    const hLabel = !h ? '' : h.ok ? 'ok'
+      : h.kind === 'timeout' ? 'slow'
+      : h.kind === 'noforwarder' ? 'no fwd' : 'fail';
     const health = h
-      ? `<span class="pill ${h.ok ? 'up' : 'down'}">${h.ok ? 'ok' : 'fail'}</span>
+      ? `<span class="pill ${hClass}">${hLabel}</span>
          <span class="rtt">${esc(rtt)}</span>
          <div class="small dim">${esc(h.detail)}</div>`
       : '<span class="dim small">no probe yet</span>';
