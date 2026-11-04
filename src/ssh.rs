@@ -63,8 +63,8 @@ pub fn forwarder_plan(
         "ExitOnForwardFailure=yes".into(),
         "-o".into(),
         "BatchMode=yes".into(),
-        "-o".into(),
-        "ServerAliveInterval=0".into(),
+        // NOTE: ssh keeps the FIRST value it sees for an option, so never emit
+        // a ServerAliveInterval=0 ahead of the real one or keepalive is dead.
         "-o".into(),
         format!("ServerAliveInterval={}", d.server_alive_interval),
         "-o".into(),
